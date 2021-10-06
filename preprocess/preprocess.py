@@ -4,15 +4,21 @@ import logging
 import os
 import subprocess
 import sys
+subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'sagemaker'])
+
 from zipfile import ZipFile
 # from time import gmtime, strftime
 import socket
 import shutil
 import json
+import time
+import argparse
+import boto3
 
-host_name = socket.gethostname()
-print(host_name)
-print(os.environ)
+n_cores = os.cpu_count()
+# host_name = socket.gethostname()
+# print(host_name)
+# print(os.environ)
 
 # Install geopandas dependency before including pandas
 subprocess.check_call([sys.executable, "-m", "pip", "install", "geopandas==0.9.0"])
@@ -21,10 +27,41 @@ import pandas as pd  # noqa: E402
 import geopandas as gpd  # noqa: E402
 from sklearn.model_selection import train_test_split  # noqa: E402
 
+import sagemaker
+from sagemaker.feature_store.feature_group import FeatureGroup
+
+def get_session(region, default_bucket):
+    """Gets the sagemaker session based on the region.
+    Args:
+        region: the aws region to start the session
+        default_bucket: the bucket to use for storing the artifacts
+    Returns:
+        `sagemaker.session.Session instance
+    """
+
+    boto_session = boto3.Session(region_name=region)
+
+    sagemaker_client = boto_session.client("sagemaker")
+#     runtime_client = boto_session.client("sagemaker-runtime")
+    return sagemaker.session.Session(
+        boto_session=boto_session,
+        sagemaker_client=sagemaker_client,
+#         sagemaker_runtime_client=runtime_client,
+        default_bucket=default_bucket,
+    )
+
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler())
 
+def parse_args() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--fg_name', type=str)
+    parser.add_argument('--region', type=str)
+    parser.add_argument('--bucket', type=str)
+    args, _ = parser.parse_known_args()
+    return args
 
 def extract_zones(zones_file: str, zones_dir: str):
     logger.info(f"Extracting zone file: {zones_file}")
@@ -93,6 +130,10 @@ def enrich_data(trip_df: pd.DataFrame, zone_df: pd.DataFrame):
             "longitude_DO": "dropoff_longitude",
         }
     )
+    
+    trip_df['FS_ID'] = trip_df.index + 1000
+    current_time_sec = int(round(time.time()))
+    trip_df["FS_time"] = pd.Series([current_time_sec]*len(trip_df), dtype="float64")
     return trip_df
 
 
@@ -121,23 +162,61 @@ def clean_data(trip_df: pd.DataFrame):
         "weekday",
         "month",
     ]
-    return trip_df[cols]
+    
+    cols_fg = [
+        "fare_amount",
+        "passenger_count",
+        "pickup_latitude",
+        "pickup_longitude",
+        "dropoff_latitude",
+        "dropoff_longitude",
+        "geo_distance",
+        "hour",
+        "weekday",
+        "month",
+        "FS_ID",
+        "FS_time"
+    ]
+    return trip_df[cols], trip_df[cols_fg]
+
+def ingest_data(data_fg: pd.DataFrame, fg_name: str, sagemaker_session) -> None:
+    
+    # 4 threads per python process
+    num_workers = 4
+    num_processes = n_cores
+    logger.info(f'Ingesting into feature group [{fg_name}] using {num_processes} processes and {num_workers} workers')
+    fg = FeatureGroup(name=fg_name, sagemaker_session=sagemaker_session)
+    response = fg.ingest(data_frame=data_fg, max_processes=num_processes, max_workers=num_workers, wait=True)
+    """
+    The ingest call above returns an IngestionManagerPandas instance as a response. Zero based indices of rows 
+    that failed to be ingested are captured via failed_rows in this response. By asserting this count to be 0,
+    we validated that all rows were successfully ingested without a failure.
+    """
+    assert len(response.failed_rows) == 0
 
 
-def save_files(base_dir: str, data_df: pd.DataFrame, val_size=0.2, test_size=0.05, current_host=None):
+def save_files(base_dir: str, data_df: pd.DataFrame, data_fg: pd.DataFrame, fg_name: str, 
+               val_size=0.2, test_size=0.05, current_host=None, sagemaker_session=None):
         
     logger.info(f"Splitting {len(data_df)} rows of data into train, val, test.")
-    train_df, val_df = train_test_split(data_df, test_size=val_size, random_state=42)
-    val_df, test_df = train_test_split(val_df, test_size=test_size, random_state=42)
+    if current_host == 'algo-1':
+        train_df, val_df = train_test_split(data_df, test_size=val_size, random_state=42)
+        val_df, test_df = train_test_split(val_df, test_size=test_size, random_state=42)
 
-    logger.info(f"Writing out datasets to {base_dir}")
-    train_df.to_csv(f"{base_dir}/train/train-{current_host}.csv", header=False, index=False)
-    val_df.to_csv(f"{base_dir}/validation/validation-{current_host}.csv", header=False, index=False)
+        logger.info(f"Writing out datasets to {base_dir}")
+        train_df.to_csv(f"{base_dir}/train/train-{current_host}.csv", header=False, index=False)
+        val_df.to_csv(f"{base_dir}/validation/validation-{current_host}.csv", header=False, index=False)
 
-    # Save test data without header
-    test_df.to_csv(f"{base_dir}/test/test-{current_host}.csv", header=False, index=False)
+        # Save test data without header
+        test_df.to_csv(f"{base_dir}/test/test-{current_host}.csv", header=False, index=False)
+    else:
+        logger.info(f"Writing out datasets to {base_dir}")
+        data_df.to_csv(f"{base_dir}/train/train-{current_host}.csv", header=False, index=False)
+    
+    # batch ingestion to the feature group of all the data
+    ingest_data(data_fg, fg_name, sagemaker_session)
 
-    return train_df, val_df, test_df
+    return 
 
 def _read_json(path):  # type: (str) -> dict
     """Read a JSON file.
@@ -149,7 +228,7 @@ def _read_json(path):  # type: (str) -> dict
     with open(path, "r") as f:
         return json.load(f)
 
-def main(base_dir):
+def main(base_dir: str, args: argparse.Namespace):
     # Input data files
     input_dir = os.path.join(base_dir, "input/data")
     input_file_list = glob.glob(f"{input_dir}/*.csv")
@@ -157,13 +236,10 @@ def main(base_dir):
     
     config_file_list = glob.glob("/opt/ml/config/*.json")
     logger.info(f"config file list: {config_file_list}")
-    if "/opt/ml/config/resourceconfig.json" in config_file_list:
-        hosts = _read_json("/opt/ml/config/resourceconfig.json")
-        logger.info(hosts)
-        current_host = hosts["current_host"]
-        logger.info(current_host)
-    else:
-        current_host = 'algo-0'
+
+    hosts = _read_json("/opt/ml/config/resourceconfig.json")
+    logger.info(hosts)
+    current_host = hosts["current_host"]
     logger.info(current_host)
         
     if len(input_file_list) == 0:
@@ -182,11 +258,18 @@ def main(base_dir):
     # Load input files
     data_df = load_data(input_file_list)
     data_df = enrich_data(data_df, zone_df)
-    data_df = clean_data(data_df)
-    return save_files(base_dir, data_df, current_host=current_host)
+    data_df, data_fg = clean_data(data_df)
+
+    fg_name = args.fg_name
+    
+    sagemaker_session = get_session(args.region, args.bucket)
+    
+    return save_files(base_dir, data_df, data_fg, fg_name, current_host=current_host, sagemaker_session=sagemaker_session)
 
 
 if __name__ == "__main__":
     logger.info("Starting preprocessing.")
-    main("/opt/ml/processing")
+    args = parse_args()
+    base_dir = "/opt/ml/processing"
+    main(base_dir, args)
     logger.info("Done")
