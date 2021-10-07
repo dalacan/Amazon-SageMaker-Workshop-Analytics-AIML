@@ -1,1 +1,1 @@
-# Amazon-SageMaker-Workshop-Custom
+# Amazon-SageMaker-Workshop-Analytics-AIML
