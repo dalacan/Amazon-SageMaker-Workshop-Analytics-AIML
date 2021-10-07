@@ -32,21 +32,14 @@ from sagemaker.feature_store.feature_group import FeatureGroup
 
 def get_session(region, default_bucket):
     """Gets the sagemaker session based on the region.
-    Args:
-        region: the aws region to start the session
-        default_bucket: the bucket to use for storing the artifacts
-    Returns:
-        `sagemaker.session.Session instance
     """
 
     boto_session = boto3.Session(region_name=region)
 
     sagemaker_client = boto_session.client("sagemaker")
-#     runtime_client = boto_session.client("sagemaker-runtime")
     return sagemaker.session.Session(
         boto_session=boto_session,
         sagemaker_client=sagemaker_client,
-#         sagemaker_runtime_client=runtime_client,
         default_bucket=default_bucket,
     )
 
@@ -57,6 +50,7 @@ logger.addHandler(logging.StreamHandler())
 
 def parse_args() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument('--fs_ing', type=str)
     parser.add_argument('--fg_name', type=str)
     parser.add_argument('--region', type=str)
     parser.add_argument('--bucket', type=str)
@@ -213,10 +207,11 @@ def save_files(base_dir: str, data_df: pd.DataFrame, data_fg: pd.DataFrame, fg_n
         logger.info(f"Writing out datasets to {base_dir}")
         data_df.to_csv(f"{base_dir}/train/train-{current_host}.csv", header=False, index=False)
     
-    # batch ingestion to the feature group of all the data
-    ingest_data(data_fg, fg_name, sagemaker_session)
+    if fg_name:
+        # batch ingestion to the feature group of all the data
+        ingest_data(data_fg, fg_name, sagemaker_session)
 
-    return 
+    return
 
 def _read_json(path):  # type: (str) -> dict
     """Read a JSON file.
@@ -233,9 +228,6 @@ def main(base_dir: str, args: argparse.Namespace):
     input_dir = os.path.join(base_dir, "input/data")
     input_file_list = glob.glob(f"{input_dir}/*.csv")
     logger.info(f"Input file list: {input_file_list}")
-    
-    config_file_list = glob.glob("/opt/ml/config/*.json")
-    logger.info(f"config file list: {config_file_list}")
 
     hosts = _read_json("/opt/ml/config/resourceconfig.json")
     logger.info(hosts)
@@ -259,8 +251,12 @@ def main(base_dir: str, args: argparse.Namespace):
     data_df = load_data(input_file_list)
     data_df = enrich_data(data_df, zone_df)
     data_df, data_fg = clean_data(data_df)
-
-    fg_name = args.fg_name
+    
+    if args.fs_ing=='True':
+        logger.info("processing step will ingest data to feature store {}".format(args.fg_name))
+        fg_name = args.fg_name
+    else:
+        fg_name = None
     
     sagemaker_session = get_session(args.region, args.bucket)
     
