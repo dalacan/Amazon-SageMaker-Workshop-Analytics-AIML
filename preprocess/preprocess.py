@@ -50,8 +50,7 @@ logger.addHandler(logging.StreamHandler())
 
 def parse_args() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--fs_ing', type=str)
-    parser.add_argument('--fg_name', type=str)
+    parser.add_argument('--ingest_featuregroup_name', type=str, default=None)
     parser.add_argument('--region', type=str)
     parser.add_argument('--bucket', type=str)
     args, _ = parser.parse_known_args()
@@ -193,19 +192,17 @@ def save_files(base_dir: str, data_df: pd.DataFrame, data_fg: pd.DataFrame, fg_n
                val_size=0.2, test_size=0.05, current_host=None, sagemaker_session=None):
         
     logger.info(f"Splitting {len(data_df)} rows of data into train, val, test.")
-    if current_host == 'algo-1':
-        train_df, val_df = train_test_split(data_df, test_size=val_size, random_state=42)
-        val_df, test_df = train_test_split(val_df, test_size=test_size, random_state=42)
 
-        logger.info(f"Writing out datasets to {base_dir}")
-        train_df.to_csv(f"{base_dir}/train/train-{current_host}.csv", header=False, index=False)
-        val_df.to_csv(f"{base_dir}/validation/validation-{current_host}.csv", header=False, index=False)
+    train_df, val_df = train_test_split(data_df, test_size=val_size, random_state=42)
+    val_df, test_df = train_test_split(val_df, test_size=test_size, random_state=42)
 
-        # Save test data without header
-        test_df.to_csv(f"{base_dir}/test/test-{current_host}.csv", header=False, index=False)
-    else:
-        logger.info(f"Writing out datasets to {base_dir}")
-        data_df.to_csv(f"{base_dir}/train/train-{current_host}.csv", header=False, index=False)
+    logger.info(f"Writing out datasets to {base_dir}")
+    train_df.to_csv(f"{base_dir}/train/{current_host}.csv", header=False, index=False)
+    val_df.to_csv(f"{base_dir}/validation/{current_host}.csv", header=False, index=False)
+
+    # Save test data without header
+    test_df.to_csv(f"{base_dir}/test/{current_host}.csv", header=False, index=False)
+
     
     if fg_name:
         # batch ingestion to the feature group of all the data
@@ -252,11 +249,7 @@ def main(base_dir: str, args: argparse.Namespace):
     data_df = enrich_data(data_df, zone_df)
     data_df, data_fg = clean_data(data_df)
     
-    if args.fs_ing=='True':
-        logger.info("processing step will ingest data to feature store {}".format(args.fg_name))
-        fg_name = args.fg_name
-    else:
-        fg_name = None
+    fg_name = args.ingest_featuregroup_name
     
     sagemaker_session = get_session(args.region, args.bucket)
     
