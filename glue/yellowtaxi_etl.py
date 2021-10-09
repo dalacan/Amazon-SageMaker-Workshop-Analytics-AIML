@@ -66,7 +66,7 @@ S3bucket_node3 = glueContext.write_dynamic_frame.from_options(
     connection_type="s3",
     format="glueparquet",
     connection_options={
-        "path": "s3://<your bucket name>/sagemaker/DEMO-xgboost-tripfare/input/data/",
+        "path": "s3://<your bucket name>/sagemaker/DEMO-xgboost-tripfare/transformed/data/",
         "partitionKeys": [],
     },
     format_options={"compression": "snappy"},
