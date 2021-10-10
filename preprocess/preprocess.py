@@ -53,6 +53,7 @@ def parse_args() -> None:
     parser.add_argument('--ingest_featuregroup_name', type=str, default=None)
     parser.add_argument('--region', type=str)
     parser.add_argument('--bucket', type=str)
+    parser.add_argument('--base_dir', type=str, default="/opt/ml/processing")
     args, _ = parser.parse_known_args()
     return args
 
@@ -259,6 +260,6 @@ def main(base_dir: str, args: argparse.Namespace):
 if __name__ == "__main__":
     logger.info("Starting preprocessing.")
     args = parse_args()
-    base_dir = "/opt/ml/processing"
+    base_dir = args.base_dir
     main(base_dir, args)
     logger.info("Done")
